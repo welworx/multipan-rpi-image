@@ -24,7 +24,7 @@
 #    only ever builds for aarch64.
 # 3. universal-silabs-flasher's version pin lives in requirements.txt instead
 #    of inline, so Dependabot's pip ecosystem can track and bump it.
-FROM ghcr.io/ihost-open-source-project/hassio-ihost-silabs-multiprotocol-aarch64:1.0.2@sha256:8456e9956ab81dfbe874e60c00a2f23ab5f1f9d3f57ee6afea092eacd9843357
+FROM ghcr.io/ihost-open-source-project/hassio-ihost-silabs-multiprotocol-aarch64:1.0.2@sha256:fd0f5bf5bfb5543752769f3b3077820ea07586dd8e9176cc3b0fae754c27a5bc
 
 ENV S6_VERBOSITY=3 \
     DEVICE="/dev/ttyUSB0" \
