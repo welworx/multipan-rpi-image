@@ -76,22 +76,30 @@ COPY requirements.txt /tmp/requirements.txt
 # without verifying against the actual binaries (ldd) or a real hardware
 # test; a wrong guess here bricks Zigbee/Thread on real hardware.
 #
-# CONFIRMED BROKEN on real hardware (2026-07-26): `--auto-remove` on
-# libprotobuf-dev also swept away libprotobuf-lite23, the runtime .so that
-# libprotobuf-dev pulled in as a dependency. apt has no idea otbr-agent (a
-# vendor binary outside dpkg's tracking) dynamically links it, so it saw
-# nothing left depending on it and took it with the header package.
-# otbr-agent then crash-looped forever: "error while loading shared
-# libraries: libprotobuf-lite.so.23". Fix: purge libprotobuf-dev/
-# protobuf-compiler WITHOUT --auto-remove, so their runtime-needed
-# dependency stays. --auto-remove is still fine for the plain header
-# packages (linux-libc-dev etc.) — nothing runtime-linked depends on them.
+# CONFIRMED BROKEN on real hardware (2026-07-26), twice:
+#
+# 1. First assumption was that `--auto-remove` on libprotobuf-dev directly
+#    swept away libprotobuf-lite23. Splitting that purge into its own
+#    command without --auto-remove did NOT fix it — apt's history.log from
+#    the actual build showed why: libprotobuf-dev (like libnsl-dev,
+#    libtirpc-dev, libcrypt-dev) `Depends: libc6-dev`. Purging libc6-dev
+#    with --auto-remove *forces* apt to also remove everything that depends
+#    on it — including libprotobuf-dev — in that same first purge command,
+#    and --auto-remove then sweeps the now-orphaned libprotobuf-lite23 too,
+#    all before the separate libprotobuf-dev purge command even runs.
+# 2. Real fix: `apt-mark manual` on libprotobuf-lite23 before any purge, so
+#    it's never eligible for auto-removal no matter which purge cascades
+#    into libprotobuf-dev. otbr-agent (a vendor binary outside dpkg's
+#    tracking) dynamically links that .so directly — apt has no way to know
+#    that on its own, so pin it explicitly. Without this, otbr-agent
+#    crash-loops forever: "error while loading shared libraries:
+#    libprotobuf-lite.so.23".
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends python3-pip \
+    && apt-mark manual libprotobuf-lite23 \
     && apt-get purge -y --auto-remove \
       linux-libc-dev libc6-dev libc-dev-bin zlib1g-dev \
-    && apt-get purge -y \
       libprotobuf-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/* && \
     pip install -r /tmp/requirements.txt && \
