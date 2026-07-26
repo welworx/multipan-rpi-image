@@ -75,11 +75,23 @@ COPY requirements.txt /tmp/requirements.txt
 # of these (e.g. libmbedtls* for cpcd's encryption layer). Don't remove
 # without verifying against the actual binaries (ldd) or a real hardware
 # test; a wrong guess here bricks Zigbee/Thread on real hardware.
+#
+# CONFIRMED BROKEN on real hardware (2026-07-26): `--auto-remove` on
+# libprotobuf-dev also swept away libprotobuf-lite23, the runtime .so that
+# libprotobuf-dev pulled in as a dependency. apt has no idea otbr-agent (a
+# vendor binary outside dpkg's tracking) dynamically links it, so it saw
+# nothing left depending on it and took it with the header package.
+# otbr-agent then crash-looped forever: "error while loading shared
+# libraries: libprotobuf-lite.so.23". Fix: purge libprotobuf-dev/
+# protobuf-compiler WITHOUT --auto-remove, so their runtime-needed
+# dependency stays. --auto-remove is still fine for the plain header
+# packages (linux-libc-dev etc.) — nothing runtime-linked depends on them.
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends python3-pip \
     && apt-get purge -y --auto-remove \
       linux-libc-dev libc6-dev libc-dev-bin zlib1g-dev \
+    && apt-get purge -y \
       libprotobuf-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/* && \
     pip install -r /tmp/requirements.txt && \
