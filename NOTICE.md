@@ -29,9 +29,12 @@ hardware (a Raspberry Pi 4B).
   of resolving `${TARGETARCH}` via a build arg (this repo only ever targets
   arm64 hardware); drops the `armv7`-specific apt branch for the same reason;
   moves the `universal-silabs-flasher` pip pin into `requirements.txt` so
-  Dependabot can track version bumps. Everything else (env defaults, the
-  Supervisor-stripping cleanup `RUN`, `COPY rootfs /`, `WORKDIR`, `VOLUME`,
-  `ENTRYPOINT`) is unchanged from upstream.
+  Dependabot can track version bumps; also removes `/usr/bin/tempio` in the
+  Supervisor-stripping cleanup `RUN` (bashio's companion templating binary —
+  bashio itself is already stripped there and nothing in `rootfs/` calls
+  tempio, so it was just dead weight carrying unpatchable CVEs). Everything
+  else (env defaults, the rest of that cleanup `RUN`, `COPY rootfs /`,
+  `WORKDIR`, `VOLUME`, `ENTRYPOINT`) is unchanged from upstream.
 - `rootfs/etc/s6-overlay/s6-rc.d/zigbeed-socket/run` and
   `rootfs/etc/s6-overlay/s6-rc.d/zigbeed-tcp/run`: **content unchanged**, mode
   corrected from the upstream repo's `100644` to `100755`. Both are
