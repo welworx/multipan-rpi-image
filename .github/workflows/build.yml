@@ -9,19 +9,63 @@ on:
       - rootfs/**
       - .github/workflows/build.yml
   schedule:
-    # Weekly fallback rebuild, in case a base-image update lands without a
-    # Dependabot-detected digest change (e.g. the vendor repushes the same tag).
-    - cron: "17 3 * * 1"
+    # Cheap check every 6h; the build job only runs if the published image has
+    # pending apt (Debian security) upgrades or is older than MAX_AGE_DAYS.
+    - cron: "17 */6 * * *"
   workflow_dispatch: {}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  MAX_AGE_DAYS: "7"
 
 permissions:
   contents: read
-  packages: write
-  security-events: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    outputs:
+      build: ${{ steps.c.outputs.build }}
+    steps:
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether a rebuild is needed
+        id: c
+        run: |
+          build=true
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && docker pull -q --platform linux/arm64 "$IMAGE:latest" >/dev/null; then
+            created=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.created"}}' "$IMAGE:latest")
+            # missing/unparseable label counts as epoch, i.e. very old -> rebuild
+            [ -n "$created" ] || created=@0
+            age=$(( ( $(date +%s) - $(date -d "$created" +%s 2>/dev/null || echo 0) ) / 86400 ))
+            # any failure here leaves pending=unknown, which forces a rebuild
+            pending=$(docker run --rm --platform linux/arm64 --user root --entrypoint bash "$IMAGE:latest" \
+              -c 'set -eo pipefail; apt-get update -qq >/dev/null; apt-get -s upgrade | awk "/^Inst/{n++} END{print n+0}"') || pending=unknown
+            echo "image age=${age}d; pending apt upgrades=$pending"
+            if [ "$pending" = 0 ] && [ "$age" -lt "$MAX_AGE_DAYS" ]; then build=false; fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     steps:
       - uses: actions/checkout@v7
 
@@ -43,6 +87,11 @@ jobs:
           version=$(grep -oP '(?<=hassio-ihost-silabs-multiprotocol-aarch64:)[0-9][0-9.]*' Dockerfile)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      # Forces the apt-get upgrade / pip layer to re-run instead of coming from cache.
+      - name: Cache-bust timestamp
+        id: date
+        run: echo "today=$(date +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/metadata-action@v6
         id: meta
         with:
@@ -56,6 +105,9 @@ jobs:
         with:
           context: .
           platforms: linux/arm64
+          build-args: CACHEBUST=${{ steps.date.outputs.today }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           push: true
           load: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -77,3 +129,30 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-results.sarif
+
+  # Daily rebuilds leave old package versions behind. Group them into builds by
+  # creation time (gap > 5 min) and delete untagged versions (old manifests,
+  # attestations) outside the newest few. Tagged versions are kept for rollback.
+  cleanup:
+    needs: build
+    if: github.ref == 'refs/heads/main' # never delete from a branch-triggered run
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      KEEP_BUILDS: "4"
+    steps:
+      - name: Delete package versions older than the newest builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pkg="users/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/versions"
+          gh api --paginate "$pkg?per_page=100" | jq -s 'add' | jq -r --argjson keep "$KEEP_BUILDS" '
+            map({id, t: (.created_at | fromdateiso8601), tagged: ((.metadata.container.tags | length) > 0)}) | sort_by(.t) | reverse
+            | reduce .[] as $v ({c: 0, last: null, out: []};
+                (if .last != null and (.last - $v.t) > 300 then .c += 1 else . end)
+                | .last = $v.t
+                | .out += [{id: $v.id, c: .c, tagged: $v.tagged}])
+            | .out[] | select(.c >= $keep and (.tagged | not)) | .id' > old_ids
+          echo "deleting $(wc -l < old_ids) old package versions"
+          while read -r id; do gh api -X DELETE "$pkg/$id" --silent; done < old_ids
