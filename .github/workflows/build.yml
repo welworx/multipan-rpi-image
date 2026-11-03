@@ -21,6 +21,10 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -43,10 +47,12 @@ jobs:
           build=true
           if [ "$GITHUB_EVENT_NAME" = schedule ] && docker pull -q --platform linux/arm64 "$IMAGE:latest" >/dev/null; then
             created=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.created"}}' "$IMAGE:latest")
+            # missing/unparseable label counts as epoch, i.e. very old -> rebuild
+            [ -n "$created" ] || created=@0
             age=$(( ( $(date +%s) - $(date -d "$created" +%s 2>/dev/null || echo 0) ) / 86400 ))
             # any failure here leaves pending=unknown, which forces a rebuild
-            pending=$(docker run --rm --platform linux/arm64 --user root --entrypoint sh "$IMAGE:latest" \
-              -c 'apt-get update -qq >/dev/null && apt-get -s upgrade | awk "/^Inst/{n++} END{print n+0}"') || pending=unknown
+            pending=$(docker run --rm --platform linux/arm64 --user root --entrypoint bash "$IMAGE:latest" \
+              -c 'set -eo pipefail; apt-get update -qq >/dev/null; apt-get -s upgrade | awk "/^Inst/{n++} END{print n+0}"') || pending=unknown
             echo "image age=${age}d; pending apt upgrades=$pending"
             if [ "$pending" = 0 ] && [ "$age" -lt "$MAX_AGE_DAYS" ]; then build=false; fi
           fi
@@ -125,7 +131,8 @@ jobs:
           sarif_file: trivy-results.sarif
 
   # Daily rebuilds leave old package versions behind. Group them into builds by
-  # creation time (gap > 5 min) and keep only the newest few.
+  # creation time (gap > 5 min) and delete untagged versions (old manifests,
+  # attestations) outside the newest few. Tagged versions are kept for rollback.
   cleanup:
     needs: build
     if: github.ref == 'refs/heads/main' # never delete from a branch-triggered run
@@ -141,11 +148,11 @@ jobs:
         run: |
           pkg="users/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/versions"
           gh api --paginate "$pkg?per_page=100" | jq -s 'add' | jq -r --argjson keep "$KEEP_BUILDS" '
-            map({id, t: (.created_at | fromdateiso8601)}) | sort_by(.t) | reverse
+            map({id, t: (.created_at | fromdateiso8601), tagged: ((.metadata.container.tags | length) > 0)}) | sort_by(.t) | reverse
             | reduce .[] as $v ({c: 0, last: null, out: []};
                 (if .last != null and (.last - $v.t) > 300 then .c += 1 else . end)
                 | .last = $v.t
-                | .out += [{id: $v.id, c: .c}])
-            | .out[] | select(.c >= $keep) | .id' > old_ids
+                | .out += [{id: $v.id, c: .c, tagged: $v.tagged}])
+            | .out[] | select(.c >= $keep and (.tagged | not)) | .id' > old_ids
           echo "deleting $(wc -l < old_ids) old package versions"
           while read -r id; do gh api -X DELETE "$pkg/$id" --silent; done < old_ids
