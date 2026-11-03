@@ -30,8 +30,11 @@ license terms.
 auto-merged, given this image's documented history of an unverified
 base-image bug reaching real hardware. Merging (or any push touching
 `Dockerfile`/`requirements.txt`/`rootfs/**`) triggers
-[`build.yml`](.github/workflows/build.yml). A weekly scheduled build runs as
-a fallback net.
+[`build.yml`](.github/workflows/build.yml). A scheduled check runs every 6
+hours and rebuilds only if the published image has pending Debian (apt)
+upgrades or is older than 7 days, so OS security patches land without
+bumping the pinned vendor base. Rebuilt images keep the same hardware-tested
+base digest; the layer is kept small (no pip, apt lists or caches left behind).
 
 ## Security
 

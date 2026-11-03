@@ -95,16 +95,26 @@ COPY requirements.txt /tmp/requirements.txt
 #    that on its own, so pin it explicitly. Without this, otbr-agent
 #    crash-loops forever: "error while loading shared libraries:
 #    libprotobuf-lite.so.23".
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends python3-pip \
+#
+# Image size / freshness:
+# - CACHEBUST is passed by CI on every scheduled rebuild so this layer is
+#   re-executed (fresh `apt-get upgrade`, fresh pip resolution of transitive
+#   deps) even when Dockerfile and base digest are unchanged.
+# - pip is only needed to install universal-silabs-flasher, so it is purged
+#   again in the same layer (the flasher itself stays), and nothing is cached.
+ARG CACHEBUST=1
+RUN echo "cachebust=${CACHEBUST}" >/dev/null \
+    && apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends python3-pip \
     && apt-mark manual libprotobuf-lite23 \
     && apt-get purge -y --auto-remove \
       linux-libc-dev libc6-dev libc-dev-bin zlib1g-dev \
       libprotobuf-dev protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/* && \
-    pip install -r /tmp/requirements.txt && \
-    rm -f /tmp/requirements.txt
+    && pip install --no-cache-dir -r /tmp/requirements.txt \
+    && apt-get purge -y python3-pip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /root/.cache /tmp/requirements.txt
 
 COPY rootfs /
 
